@@ -1,0 +1,135 @@
+name: formio
+
+services:
+
+  caddy:
+    container_name: formio-proxy
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    volumes:
+      - ./volumes/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+
+  api:
+    container_name: formio-api
+    image: formio/formio-enterprise:${API_SERVER_VERSION:-9.7}
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/status', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1));"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "5000"
+    environment:
+      PDF_SERVER: http://formio-pdf:5000
+      PORT: 5000
+      PORTAL_ENABLED: 1
+      LICENSE_KEY: ${LICENSE_KEY:?Contact sales for a valid license key.}
+      MONGO: "mongodb://${MONGO_USER}:${MONGO_PASSWORD}@formio-db:27017/${MONGO_DATABASE}?tls=false&retryWrites=false&authSource=admin"
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASS: ${ADMIN_PASS}
+      ADMIN_KEY: ${ADMIN_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      DB_SECRET: ${DB_SECRET}
+
+  pdf:
+    container_name: formio-pdf
+    image: formio/pdf-server:${PDF_SERVER_VERSION:-5.13}
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+    ports:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/status', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1));"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    environment:
+      FORMIO_S3_SERVER: formio-s3
+      FORMIO_S3_PORT: 9000
+      FORMIO_PDF_PORT: 5000
+      LICENSE_KEY: ${LICENSE_KEY:?Contact sales for a valid license key.}
+      MONGO: "mongodb://${MONGO_USER}:${MONGO_PASSWORD}@formio-db:27017/${MONGO_DATABASE}?tls=false&retryWrites=false&authSource=admin"
+      DB_SECRET: ${DB_SECRET}
+      FORMIO_S3_BUCKET: ${FORMIO_S3_BUCKET}
+      FORMIO_S3_REGION: ${FORMIO_S3_REGION}
+      FORMIO_S3_KEY: ${FORMIO_S3_KEY}
+      FORMIO_S3_SECRET: ${FORMIO_S3_SECRET}
+
+  mongo:
+    container_name: formio-db
+    image: mongo:${MONGO_VERSION:-8.2}
+    restart: unless-stopped
+    ports:
+      - "27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - mongo-data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+
+  s3:
+    container_name: formio-s3
+    image: chrislusf/seaweedfs
+    command: ["mini", "-s3.port", "9000", "-filer.port", "9001"]
+    restart: unless-stopped
+    ports:
+    - "9000:9000"
+    - "9001:9001"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://0.0.0.0:9001/"]
+      interval: 2s
+      timeout: 10s
+      retries: 5
+    environment:
+      AWS_ACCESS_KEY_ID: ${FORMIO_S3_KEY}
+      AWS_SECRET_ACCESS_KEY: ${FORMIO_S3_SECRET}
+    volumes:
+      - seaweedfs-data:/data
+
+  ready-message:
+    container_name: "ready-message"
+    image: alpine:latest
+    depends_on:
+      api:
+        condition: service_healthy
+      pdf:
+        condition: service_healthy
+    command: >
+      sh -c '
+        echo "=================================================="
+        echo "🚀 Form.io is now fully up and running!"
+        echo ""
+        echo "Connect to the app at: http://localhost:3000"
+        echo "Admin credentials: email=${ADMIN_EMAIL} / passord=${ADMIN_PASS}"
+        echo ""
+        echo "Useful commands:"
+        echo "  docker compose logs -f formio-api"
+        echo "  docker compose logs -f formio-pdf"
+        echo "=================================================="
+        exit 0
+      '
+    restart: no
+
+volumes:
+  mongo-data:
+  seaweedfs-data:

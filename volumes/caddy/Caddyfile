@@ -1,0 +1,11 @@
+:80 {
+    request_body {
+        max_size 20MB
+    }
+
+    handle_path /pdf/* {
+        reverse_proxy formio-pdf:5000
+    }
+
+    reverse_proxy formio-api:5000
+}
